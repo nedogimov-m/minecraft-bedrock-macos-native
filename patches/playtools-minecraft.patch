@@ -1,0 +1,604 @@
+diff --git a/PlayTools.xcodeproj/project.pbxproj b/PlayTools.xcodeproj/project.pbxproj
+index 253c39e..1d29179 100644
+--- a/PlayTools.xcodeproj/project.pbxproj
++++ b/PlayTools.xcodeproj/project.pbxproj
+@@ -88,6 +88,7 @@
+ 		B6D774FF2ACFC3D900C0D9D8 /* SwordRPC in Frameworks */ = {isa = PBXBuildFile; productRef = B6D774FE2ACFC3D900C0D9D8 /* SwordRPC */; };
+ 		D04B12CA2EF6F3DD008FEC14 /* MediaVolume.m in Sources */ = {isa = PBXBuildFile; fileRef = D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */; };
+ 		EEB248592B81D074000C230A /* PlayedAppleDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEB248582B81D074000C230A /* PlayedAppleDB.swift */; };
++		B920FA7B6761B056A11B1FD5 /* PlayedAppleDBPersistentRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DB4D595BB9F7397B41FF1B8 /* PlayedAppleDBPersistentRef.swift */; };
+ /* End PBXBuildFile section */
+ 
+ /* Begin PBXCopyFilesBuildPhase section */
+@@ -191,6 +192,7 @@
+ 		D04B12C92EF6F3DD008FEC14 /* MediaVolume.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaVolume.m; sourceTree = "<group>"; };
+ 		D04B12CC2EF6F3F9008FEC14 /* MediaVolume.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaVolume.h; sourceTree = "<group>"; };
+ 		EEB248582B81D074000C230A /* PlayedAppleDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDB.swift; sourceTree = "<group>"; };
++		1DB4D595BB9F7397B41FF1B8 /* PlayedAppleDBPersistentRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayedAppleDBPersistentRef.swift; sourceTree = "<group>"; };
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFrameworksBuildPhase section */
+@@ -546,6 +548,7 @@
+ 				B66E64FF2C936E9800E48FD0 /* PlayedAppleDBConstants.swift */,
+ 				ABCECEE529750BA600746595 /* PlayedApple.swift */,
+ 				EEB248582B81D074000C230A /* PlayedAppleDB.swift */,
++				1DB4D595BB9F7397B41FF1B8 /* PlayedAppleDBPersistentRef.swift */,
+ 				AB7DA47429B85BFB0034ACB2 /* PlayShadow.m */,
+ 				AB7DA47629B8A78B0034ACB2 /* PlayShadow.h */,
+ 			);
+@@ -726,6 +729,7 @@
+ 				6E76639B28D0FAE700DE4AF9 /* Plugin.swift in Sources */,
+ 				B1271729288284BE0025112B /* DiscordActivity.swift in Sources */,
+ 				EEB248592B81D074000C230A /* PlayedAppleDB.swift in Sources */,
++				B920FA7B6761B056A11B1FD5 /* PlayedAppleDBPersistentRef.swift in Sources */,
+ 				954389CC2B39F03D00B063BB /* EditorView.swift in Sources */,
+ 				954389C22B38922400B063BB /* MouseArea.swift in Sources */,
+ 				AA7197AB287A481500623C15 /* Element.swift in Sources */,
+diff --git a/PlayTools/Controls/PTFakeTouch/NSObject+Swizzle.m b/PlayTools/Controls/PTFakeTouch/NSObject+Swizzle.m
+index e50200f..b7254ee 100644
+--- a/PlayTools/Controls/PTFakeTouch/NSObject+Swizzle.m
++++ b/PlayTools/Controls/PTFakeTouch/NSObject+Swizzle.m
+@@ -333,7 +333,9 @@ + (void)load {
+     }
+     
+     [objc_getClass("_UIMenuBuilder") swizzleInstanceMethod:sel_getUid("initWithRootMenu:") withMethod:@selector(initWithRootMenuHook:)];
+-    [objc_getClass("IOSViewController") swizzleInstanceMethod:@selector(prefersPointerLocked) withMethod:@selector(hook_prefersPointerLocked)];
++    if ([[PlaySettings shared] keymapping]) {
++        [objc_getClass("IOSViewController") swizzleInstanceMethod:@selector(prefersPointerLocked) withMethod:@selector(hook_prefersPointerLocked)];
++    }
+     // Set idiom to iPad
+     // [objc_getClass("UIDevice") swizzleInstanceMethod:@selector(userInterfaceIdiom) withMethod:@selector(hook_userInterfaceIdiom)];
+     // [objc_getClass("UITraitCollection") swizzleInstanceMethod:@selector(userInterfaceIdiom) withMethod:@selector(hook_userInterfaceIdiom)];
+diff --git a/PlayTools/MysticRunes/PlayedApple.swift b/PlayTools/MysticRunes/PlayedApple.swift
+index fb2adaa..e097d58 100644
+--- a/PlayTools/MysticRunes/PlayedApple.swift
++++ b/PlayTools/MysticRunes/PlayedApple.swift
+@@ -21,6 +21,7 @@ public class PlayKeychain: NSObject {
+             NSLog("PC-DEBUG: \(logContent)")
+         }
+     }
++
+     // Emulates SecItemAdd, SecItemUpdate, SecItemDelete and SecItemCopyMatching
+     // Store the entire dictionary as a plist
+     // SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result)
+@@ -31,20 +32,22 @@ public class PlayKeychain: NSObject {
+             return errSecIO
+         }
+         debugLogger("Wrote keychain item to db")
+-        // Place v_Data in the result
+-        guard let vData = attributes["v_Data"] as? CFTypeRef else {
++
++        if requested(kSecReturnAttributes, in: attributes) {
++            result?.pointee = Unmanaged.passRetained(returnedAttributes(keychainDict, options: attributes))
+             return errSecSuccess
+         }
+ 
+-        if attributes["r_Attributes"] as? Int == 1 {
+-            // Create a dummy dictionary and return it
+-            let dummyDict = keychainDict
+-            if attributes["r_Data"] as? Int != 1 {
+-                dummyDict.removeObject(forKey: kSecValueData)
+-                dummyDict.removeObject(forKey: kSecValueRef)
+-                dummyDict.removeObject(forKey: kSecValuePersistentRef)
++        if requested(kSecReturnPersistentRef, in: attributes) {
++            guard let persistentRef = returnedPersistentRef(keychainDict, options: attributes) else {
++                return errSecIO
+             }
+-            result?.pointee = Unmanaged.passRetained(dummyDict)
++            result?.pointee = Unmanaged.passRetained(persistentRef)
++            return errSecSuccess
++        }
++
++        // Place v_Data in the result
++        guard let vData = attributes[kSecValueData] else {
+             return errSecSuccess
+         }
+ 
+@@ -69,12 +72,13 @@ public class PlayKeychain: NSObject {
+             }
+             return errSecBadReq
+         }
+-        result?.pointee = Unmanaged.passRetained(vData)
++        result?.pointee = Unmanaged.passRetained(vData as CFTypeRef)
+         return errSecSuccess
+     }
+ 
+     // SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate)
+     @objc static public func update(_ query: NSDictionary, attributesToUpdate: NSDictionary) -> OSStatus {
++        guard attributesToUpdate[kSecValuePersistentRef] == nil else { return errSecParam }
+         guard let keychainDict = playChainDB.query(query)?.first else {
+             debugLogger("Keychain item not found in db")
+             return errSecItemNotFound
+@@ -112,7 +116,6 @@ public class PlayKeychain: NSObject {
+     }
+ 
+     // SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
+-    // swiftlint:disable:next function_body_length
+     @objc static public func copyMatching(_ query: NSDictionary,
+                                           result: UnsafeMutablePointer<Unmanaged<CFTypeRef>?>?) -> OSStatus {
+         guard let keychainDicts = playChainDB.query(query),
+@@ -121,57 +124,34 @@ public class PlayKeychain: NSObject {
+             return errSecItemNotFound
+         }
+ 
+-        if query[kSecMatchLimit as String] as? String ==  kSecMatchLimitAll as String {
+-            result?.pointee = Unmanaged.passRetained(keychainDicts.map({
+-                $0.removeObject(forKey: kSecValueData)
+-                $0.removeObject(forKey: kSecValueRef)
+-                $0.removeObject(forKey: kSecValuePersistentRef)
+-                return $0
+-            }) as CFTypeRef)
++        if query[kSecMatchLimit as String] as? String == kSecMatchLimitAll as String {
++            guard let matches = returnedMatches(keychainDicts, options: query) else { return errSecIO }
++            result?.pointee = Unmanaged.passRetained(matches as CFTypeRef)
+             return errSecSuccess
+         }
+         // Check the `r_Attributes` key. If it is set to 1 in the query
+         let classType = query[kSecClass as String] as? String ?? ""
+ 
+-        if query["r_Attributes"] as? Int == 1 {
+-            // Create a dummy dictionary and return it
+-            let dummyDict = keychainDict
+-            if query["r_Data"] as? Int != 1 {
+-                dummyDict.removeObject(forKey: kSecValueData)
+-                dummyDict.removeObject(forKey: kSecValueRef)
+-                dummyDict.removeObject(forKey: kSecValuePersistentRef)
+-            }
+-            result?.pointee = Unmanaged.passRetained(dummyDict)
++        if requested(kSecReturnAttributes, in: query) {
++            result?.pointee = Unmanaged.passRetained(returnedAttributes(keychainDict, options: query))
+             return errSecSuccess
+         }
+ 
+-        // Check for r_Ref
+-        if query["r_Ref"] as? Int == 1 {
+-            // Return the data on v_PersistentRef or v_Data if they exist
+-            var key: CFTypeRef?
+-            if let vData = keychainDict[kSecValueData] {
+-                NSLog("found v_Data")
+-                debugLogger("Read keychain item from db")
+-                key = vData as CFTypeRef
+-            }
+-            if let vPersistentRef = keychainDict[kSecValuePersistentRef] {
+-                NSLog("found persistent ref")
+-                debugLogger("Read keychain item from db")
+-                key = vPersistentRef as CFTypeRef
++        if requested(kSecReturnPersistentRef, in: query) {
++            guard let persistentRef = returnedPersistentRef(keychainDict, options: query) else {
++                return errSecIO
+             }
++            result?.pointee = Unmanaged.passRetained(persistentRef)
++            return errSecSuccess
++        }
+ 
+-            if key == nil {
++        // Check for r_Ref
++        if requested(kSecReturnRef, in: query) {
++            guard let reference = keyReference(keychainDict) else {
+                 debugLogger("Keychain item not found in db")
+                 return errSecItemNotFound
+             }
+-
+-            let dummyKeyAttrs = [
+-                kSecAttrKeyType: keychainDict[kSecAttrKeyType] ?? kSecAttrKeyTypeRSA,
+-                kSecAttrKeyClass: keychainDict[kSecAttrKeyClass] ?? kSecAttrKeyClassPublic
+-            ] as CFDictionary
+-
+-            let secKey = SecKeyCreateWithData(key as! CFData, dummyKeyAttrs, nil) // swiftlint:disable:this force_cast
+-            result?.pointee = Unmanaged.passRetained(secKey!)
++            result?.pointee = Unmanaged.passRetained(reference)
+             return errSecSuccess
+         }
+ 
+@@ -301,3 +281,68 @@ public class PlayKeychain: NSObject {
+         return errSecSuccess
+     }
+ }
++
++private extension PlayKeychain {
++    static func requested(_ key: CFString, in options: NSDictionary) -> Bool {
++        (options[key] as? NSNumber)?.boolValue == true
++    }
++
++    static func returnedAttributes(_ item: NSMutableDictionary,
++                                   options: NSDictionary) -> NSMutableDictionary {
++        let attributes = item.mutableCopy() as! NSMutableDictionary // swiftlint:disable:this force_cast
++        if !requested(kSecReturnData, in: options) {
++            attributes.removeObject(forKey: kSecValueData)
++        }
++        if requested(kSecReturnRef, in: options) {
++            attributes[kSecValueRef] = keyReference(item)
++        } else {
++            attributes.removeObject(forKey: kSecValueRef)
++        }
++        if !requested(kSecReturnPersistentRef, in: options) {
++            attributes.removeObject(forKey: kSecValuePersistentRef)
++        }
++        return attributes
++    }
++
++    static func keyReference(_ item: NSMutableDictionary) -> CFTypeRef? {
++        if let storedRef = item[kSecValueRef], !(storedRef is NSNull) {
++            return storedRef as CFTypeRef
++        }
++        guard item[kSecClass] as? String == kSecClassKey as String,
++              let keyData = item[kSecValueData] as? Data else { return nil }
++        let keyAttributes = [
++            kSecAttrKeyType: item[kSecAttrKeyType] ?? kSecAttrKeyTypeRSA,
++            kSecAttrKeyClass: item[kSecAttrKeyClass] ?? kSecAttrKeyClassPublic
++        ] as CFDictionary
++        return SecKeyCreateWithData(keyData as CFData, keyAttributes, nil)
++    }
++
++    static func returnedPersistentRef(_ item: NSMutableDictionary,
++                                      options: NSDictionary) -> CFTypeRef? {
++        guard let persistentRef = item[kSecValuePersistentRef] else { return nil }
++        let wantsData = requested(kSecReturnData, in: options)
++        let wantsRef = requested(kSecReturnRef, in: options)
++        guard wantsData || wantsRef else { return persistentRef as CFTypeRef }
++
++        let values: NSMutableDictionary = [kSecValuePersistentRef as String: persistentRef]
++        if wantsData {
++            guard let data = item[kSecValueData] else { return nil }
++            values[kSecValueData] = data
++        }
++        if wantsRef {
++            guard let reference = keyReference(item) else { return nil }
++            values[kSecValueRef] = reference
++        }
++        return values
++    }
++
++    static func returnedMatches(_ items: [NSMutableDictionary],
++                                options: NSDictionary) -> [CFTypeRef]? {
++        if requested(kSecReturnPersistentRef, in: options),
++           !requested(kSecReturnAttributes, in: options) {
++            let references = items.compactMap({ returnedPersistentRef($0, options: options) })
++            return references.count == items.count ? references : nil
++        }
++        return items.map({ returnedAttributes($0, options: options) as CFTypeRef })
++    }
++}
+diff --git a/PlayTools/MysticRunes/PlayedAppleDB.swift b/PlayTools/MysticRunes/PlayedAppleDB.swift
+index 06103b6..0765ace 100644
+--- a/PlayTools/MysticRunes/PlayedAppleDB.swift
++++ b/PlayTools/MysticRunes/PlayedAppleDB.swift
+@@ -13,9 +13,21 @@ class PlayKeychainDB: NSObject {
+     public static let shared = PlayKeychainDB()
+ 
+     private var dbLock: DispatchSemaphore = .init(value: 1)
+-    private var dbVersion: Int = 1
++    private let dbVersion = 2
++    private let databaseURL: URL?
++    private var schemaReady = false
++
++    init(databaseURL: URL? = nil) {
++        self.databaseURL = databaseURL
++        super.init()
++    }
+ 
+     func query(_ attributes: NSDictionary) -> [NSMutableDictionary]? {
++        if let value = attributes[kSecValuePersistentRef] {
++            guard let persistentRef = value as? Data else { return nil }
++            return query(persistentRef: persistentRef, attributes: attributes)
++        }
++
+         guard let tableName = attributes[kSecClass] as? String,
+               let primaryColumns = PlayedAppleDBConstants.primaries[tableName as CFString] else {
+             return nil
+@@ -46,17 +58,7 @@ class PlayKeychainDB: NSObject {
+             }
+ 
+             while sqlite3_step(stmt) == SQLITE_ROW && dictArr.count < selectLimit {
+-                let newDict: NSMutableDictionary = [:]
+-                let columns = sqlite3_column_count(stmt)
+-                newDict[kSecClass] = tableName
+-                newDict[kSecAttrSynchronizable] = attributes[kSecAttrSynchronizable]
+-                for index in 0..<columns {
+-                    let name = String(cString: sqlite3_column_name(stmt, index))
+-                    if let value = decodeData(stmt: stmt, index: index) {
+-                        newDict[name] = value
+-                    }
+-                }
+-                dictArr.append(newDict)
++                dictArr.append(decodeRow(stmt: stmt, tableName: tableName, attributes: attributes))
+             }
+ 
+             return true
+@@ -65,6 +67,20 @@ class PlayKeychainDB: NSObject {
+         return dictArr
+     }
+ 
++    func decodeRow(stmt: OpaquePointer, tableName: String,
++                   attributes: NSDictionary) -> NSMutableDictionary {
++        let row: NSMutableDictionary = [:]
++        row[kSecClass] = tableName
++        row[kSecAttrSynchronizable] = attributes[kSecAttrSynchronizable]
++        for index in 0..<sqlite3_column_count(stmt) {
++            let name = String(cString: sqlite3_column_name(stmt, index))
++            if let value = decodeData(stmt: stmt, index: index) {
++                row[name] = value
++            }
++        }
++        return row
++    }
++
+     func insert(_ attributes: NSDictionary) -> NSMutableDictionary? {
+         guard let tableName = attributes[kSecClass] as? String,
+               let primaryColumns = PlayedAppleDBConstants.primaries[tableName as CFString],
+@@ -72,15 +88,19 @@ class PlayKeychainDB: NSObject {
+             return nil
+         }
+ 
++        let persistentRef = Data(UUID().uuidString.utf8)
+         var columnsQuery = primaryColumns.map({ "\($0)" })
+         columnsQuery.append(contentsOf: secondaryColumns.compactMap({
+             attributes[$0] != nil ? "\($0)" : nil
+         }))
+         columnsQuery.append(contentsOf: PlayedAppleDBConstants.values.compactMap({
+-            attributes[$0] != nil ? "\($0)" : nil
++            $0 != kSecValuePersistentRef && attributes[$0] != nil ? "\($0)" : nil
+         }))
++        columnsQuery.append("\(kSecValuePersistentRef)")
+ 
+-        let insertValues = columnsQuery.map({ attributes[$0] as CFTypeRef })
++        let insertValues = columnsQuery.map({
++            $0 == kSecValuePersistentRef as String ? persistentRef as CFTypeRef : attributes[$0] as CFTypeRef
++        })
+ 
+         let insertColumns = columnsQuery.joined(separator: ", ")
+         let insertPlaceholders = Array(repeating: "?", count: insertValues.count).joined(separator: ", ")
+@@ -89,10 +109,11 @@ class PlayKeychainDB: NSObject {
+         var stmt: OpaquePointer?
+ 
+         let newDict: NSMutableDictionary = [:]
+-        newDict[kSecClassKey] = tableName
++        newDict[kSecClass] = tableName
+         for column in columnsQuery {
+             newDict[column] = attributes[column]
+         }
++        newDict[kSecValuePersistentRef] = persistentRef
+ 
+         guard usingDB({ sqlite3DB in
+             defer { sqlite3_finalize(stmt) }
+@@ -132,17 +153,23 @@ class PlayKeychainDB: NSObject {
+             attributes[$0] != nil ? "\($0)" : nil
+         }))
+ 
+-        let updateValues = columnsQuery.map({ attributes[$0] as CFTypeRef })
++        var updateValues = columnsQuery.map({ attributes[$0] as CFTypeRef })
+ 
+         let updateColumns = columnsQuery.map({ return "\($0) = ?" }).joined(separator: ", ")
+-        let updateWhere = primaryColumns.compactMap({
+-            guard let attr = attributes[$0] else { return nil }
+-            if CFGetTypeID(attr as CFTypeRef) == CFDataGetTypeID(),
+-               let string = (attr as? Data).map({ return String(data: $0, encoding: .utf8) }) {
+-                return "\($0) LIKE '\(string!)'" // \0 does not exists in db due to casting
+-            }
+-            return "\($0) = '\(attr)'"
+-        }).joined(separator: " AND ")
++        let updateWhere: String
++        if let persistentRef = attributes[kSecValuePersistentRef] as? Data {
++            updateWhere = "\(kSecValuePersistentRef) = ?"
++            updateValues.append(persistentRef as CFTypeRef)
++        } else {
++            updateWhere = primaryColumns.compactMap({
++                guard let attr = attributes[$0] else { return nil }
++                if CFGetTypeID(attr as CFTypeRef) == CFDataGetTypeID(),
++                   let string = (attr as? Data).map({ return String(data: $0, encoding: .utf8) }) {
++                    return "\($0) LIKE '\(string!)'" // \0 does not exists in db due to casting
++                }
++                return "\($0) = '\(attr)'"
++            }).joined(separator: " AND ")
++        }
+ 
+         let updateQuery = "UPDATE \(tableName) SET \(updateColumns) WHERE \(updateWhere)"
+         var stmt: OpaquePointer?
+@@ -171,6 +198,11 @@ class PlayKeychainDB: NSObject {
+     }
+ 
+     func delete(_ attributes: NSDictionary) -> Bool {
++        if let value = attributes[kSecValuePersistentRef] {
++            guard let persistentRef = value as? Data else { return false }
++            return delete(persistentRef: persistentRef, itemClass: attributes[kSecClass] as? String)
++        }
++
+         guard let tableName = attributes[kSecClass] as? String,
+               let primaryColumns = PlayedAppleDBConstants.primaries[tableName as CFString] else {
+             return false
+@@ -198,12 +230,15 @@ class PlayKeychainDB: NSObject {
+                 return false
+             }
+ 
+-            return sqlite3_step(stmt) == SQLITE_OK
++            return sqlite3_step(stmt) == SQLITE_DONE
+         }) else { return false }
+ 
+         return true
+     }
+ 
++}
++
++extension PlayKeychainDB {
+     private func structDB(_ sqlite3DB: OpaquePointer) -> Bool {
+         for (key, value) in PlayedAppleDBConstants.primaries {
+             var columns: [CFString] = value
+@@ -220,12 +255,39 @@ class PlayKeychainDB: NSObject {
+             }
+         }
+ 
+-        sqlite3_exec(sqlite3DB, "PRAGMA user_version = \(dbVersion)", nil, nil, nil)
++        return true
++    }
+ 
++    private func migratePersistentRefs(_ sqlite3DB: OpaquePointer) -> Bool {
++        var stmt: OpaquePointer?
++        guard sqlite3_prepare_v2(sqlite3DB, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK else {
++            sqlite3_finalize(stmt)
++            return false
++        }
++        let status = sqlite3_step(stmt)
++        let version = status == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : nil
++        sqlite3_finalize(stmt)
++        guard let version = version else { return false }
++        guard version < dbVersion else { return true }
++
++        guard sqlite3_exec(sqlite3DB, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
++        for tableName in PlayedAppleDBConstants.primaries.keys {
++            let updateQuery = "UPDATE \(tableName) SET \(kSecValuePersistentRef) = randomblob(16) "
++                + "WHERE \(kSecValuePersistentRef) IS NULL"
++            guard sqlite3_exec(sqlite3DB, updateQuery, nil, nil, nil) == SQLITE_OK else {
++                sqlite3_exec(sqlite3DB, "ROLLBACK", nil, nil, nil)
++                return false
++            }
++        }
++        guard sqlite3_exec(sqlite3DB, "PRAGMA user_version = \(dbVersion)", nil, nil, nil) == SQLITE_OK,
++              sqlite3_exec(sqlite3DB, "COMMIT", nil, nil, nil) == SQLITE_OK else {
++            sqlite3_exec(sqlite3DB, "ROLLBACK", nil, nil, nil)
++            return false
++        }
+         return true
+     }
+ 
+-    private func usingDB(_ callback: (OpaquePointer) -> Bool) -> Bool {
++    func usingDB(_ callback: (OpaquePointer) -> Bool) -> Bool {
+         dbLock.wait()
+         defer { dbLock.signal() }
+ 
+@@ -238,11 +300,10 @@ class PlayKeychainDB: NSObject {
+     private func connectToDB() -> OpaquePointer? {
+         var sqlite3DB: OpaquePointer?
+         let bundleID = Bundle.main.infoDictionary?["CFBundleIdentifier"] as? String ?? "Shared"
+-        let keychainDB = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
++        let defaultURL = URL(fileURLWithPath: "/Users/\(NSUserName())/Library/Containers/io.playcover.PlayCover")
+             .appendingPathComponent("PlayChain")
+             .appendingPathComponent("\(bundleID).db")
+-
+-        let alreadyCreated = FileManager.default.fileExists(atPath: keychainDB.path)
++        let keychainDB = databaseURL ?? defaultURL
+ 
+         guard sqlite3_open(keychainDB.path, &sqlite3DB) == SQLITE_OK,
+               let sqlite3DB = sqlite3DB else {
+@@ -250,9 +311,12 @@ class PlayKeychainDB: NSObject {
+             return nil
+         }
+ 
+-        if !alreadyCreated || !structDB(sqlite3DB) {
+-            _ = disconnectFromDB(sqlite3DB)
+-            return nil
++        if !schemaReady {
++            guard structDB(sqlite3DB), migratePersistentRefs(sqlite3DB) else {
++                _ = disconnectFromDB(sqlite3DB)
++                return nil
++            }
++            schemaReady = true
+         }
+ 
+         return sqlite3DB
+@@ -267,7 +331,7 @@ class PlayKeychainDB: NSObject {
+         return true
+     }
+ 
+-    private func encodeData(stmt: OpaquePointer, index: Int32, value: CFTypeRef) -> Bool {
++    func encodeData(stmt: OpaquePointer, index: Int32, value: CFTypeRef) -> Bool {
+         let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+         var result = SQLITE_FAIL
+         switch CFGetTypeID(value) {
+diff --git a/PlayTools/MysticRunes/PlayedAppleDBPersistentRef.swift b/PlayTools/MysticRunes/PlayedAppleDBPersistentRef.swift
+new file mode 100644
+index 0000000..af643c6
+--- /dev/null
++++ b/PlayTools/MysticRunes/PlayedAppleDBPersistentRef.swift
+@@ -0,0 +1,79 @@
++//
++//  PlayedAppleDBPersistentRef.swift
++//  PlayTools
++//
++
++import Foundation
++import Security
++import SQLite3
++
++extension PlayKeychainDB {
++    func query(persistentRef: Data, attributes: NSDictionary) -> [NSMutableDictionary]? {
++        let tableNames: [String]
++        if let tableName = attributes[kSecClass] as? String {
++            guard PlayedAppleDBConstants.primaries[tableName as CFString] != nil else { return nil }
++            tableNames = [tableName]
++        } else {
++            tableNames = PlayedAppleDBConstants.primaries.keys.map { $0 as String }
++        }
++
++        var matches: [NSMutableDictionary] = []
++        guard usingDB({ sqlite3DB in
++            for tableName in tableNames {
++                var stmt: OpaquePointer?
++                let selectQuery = "SELECT * FROM \(tableName) WHERE \(kSecValuePersistentRef) = ? LIMIT 1"
++                guard sqlite3_prepare_v2(sqlite3DB, selectQuery, -1, &stmt, nil) == SQLITE_OK,
++                      let stmt = stmt else {
++                    sqlite3_finalize(stmt)
++                    return false
++                }
++                defer { sqlite3_finalize(stmt) }
++
++                guard encodeData(stmt: stmt, index: 1, value: persistentRef as CFData) else { return false }
++                let status = sqlite3_step(stmt)
++                if status == SQLITE_ROW {
++                    matches.append(decodeRow(stmt: stmt, tableName: tableName, attributes: attributes))
++                    return true
++                }
++                guard status == SQLITE_DONE else { return false }
++            }
++            return true
++        }) else { return nil }
++
++        return matches
++    }
++
++    func delete(persistentRef: Data, itemClass: String?) -> Bool {
++        let tableNames: [String]
++        if let itemClass = itemClass {
++            guard PlayedAppleDBConstants.primaries[itemClass as CFString] != nil else { return false }
++            tableNames = [itemClass]
++        } else {
++            tableNames = PlayedAppleDBConstants.primaries.keys.map { $0 as String }
++        }
++
++        var deleted = false
++        guard usingDB({ sqlite3DB in
++            for tableName in tableNames {
++                var stmt: OpaquePointer?
++                let deleteQuery = "DELETE FROM \(tableName) WHERE \(kSecValuePersistentRef) = ?"
++                guard sqlite3_prepare_v2(sqlite3DB, deleteQuery, -1, &stmt, nil) == SQLITE_OK,
++                      let stmt = stmt else {
++                    sqlite3_finalize(stmt)
++                    return false
++                }
++                defer { sqlite3_finalize(stmt) }
++
++                guard encodeData(stmt: stmt, index: 1, value: persistentRef as CFData),
++                      sqlite3_step(stmt) == SQLITE_DONE else { return false }
++                if sqlite3_changes(sqlite3DB) > 0 {
++                    deleted = true
++                    return true
++                }
++            }
++            return true
++        }) else { return false }
++
++        return deleted
++    }
++}
+diff --git a/PlayTools/PlaySettings.swift b/PlayTools/PlaySettings.swift
+index a5f945b..ece1302 100644
+--- a/PlayTools/PlaySettings.swift
++++ b/PlayTools/PlaySettings.swift
+@@ -25,7 +25,7 @@ let settings = PlaySettings.shared
+ 
+     lazy var discordActivity = settingsData.discordActivity
+ 
+-    lazy var keymapping = settingsData.keymapping
++    @objc lazy var keymapping = settingsData.keymapping
+ 
+     lazy var notch = settingsData.notch
+ 

@@ -1,0 +1,8 @@
+/build/
+*.app/
+*.dylib
+*.ipa
+*.xcarchive/
+*.xcresult/
+*.log
+.DS_Store
